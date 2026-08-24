@@ -40,8 +40,10 @@
   - カイ二乗検定によるランダム性の確認
 - `src/suggest.py`: 人気パターン(誕生日範囲のみ・規則的な数列)を避けた
   ランダムな組み合わせを提案(当選確率は変わりません。上記参照)
+- `src/post_to_x.py`: レポートから傾向まとめの投稿文を生成し、X(旧Twitter)
+  に自動投稿する。新しい抽選回が追加された時だけ投稿し、重複投稿はしない
 - `.github/workflows/update.yml`: 抽選日の夜に自動でデータ取得・分析・
-  コミットするスケジュール実行
+  X投稿・コミットするスケジュール実行
 
 ## セットアップ (ローカルで実行する場合)
 
@@ -53,6 +55,9 @@ pip install -r requirements.txt
 python src/fetch_data.py   # data/loto6.csv, data/loto7.csv を取得
 python src/analyze.py      # reports/ にレポートを生成
 python src/suggest.py      # 番号提案(任意)
+
+# Xへの投稿内容だけ確認したい場合(実際には投稿しない)
+X_POST_DRY_RUN=1 python src/post_to_x.py
 ```
 
 ## GitHub Actionsでの自動運用
@@ -87,6 +92,61 @@ python src/suggest.py      # 番号提案(任意)
 - 別のデータ源に切り替えたい場合は `src/config.py` の `source_url` と
   `src/fetch_data.py` のパース処理を差し替えればよい。
 
+## Xへの自動投稿の設定
+
+新しい抽選結果が出るたびに、傾向まとめ(よく出る数字TOP3・長く出ていない
+数字TOP3・本数字合計の平均など)を自動でXに投稿できます。投稿文の例:
+
+```
+【ロト6傾向まとめ】第2130回(2026/08/20)時点
+よく出る数字TOP3: 6、37、42
+長く出ていない数字TOP3: 24、39、19
+本数字合計の平均: 132.42
+※過去の頻度は次回の確率に影響しません(統計的に完全ランダム)
+#ロト6 #宝くじ
+```
+
+### 1. X Developer Portalでアプリを作成
+
+1. https://developer.x.com/ にログイン(なければ開発者アカウント登録)
+2. プロジェクトとアプリを新規作成
+3. アプリの **「User authentication settings」** を開き、
+   **「Read and Write」** 権限を有効化する
+   (⚠️ 重要: デフォルトはRead onlyなので、必ずここを変更してから
+   次のトークン発行を行うこと。権限変更前にトークンを発行していた場合は、
+   権限変更後に再発行が必要)
+4. **「Keys and tokens」** タブから以下の4つを取得する
+   - API Key / API Key Secret (Consumer Keys)
+   - Access Token / Access Token Secret(「Generate」ボタンから発行)
+
+投稿(Write)のみであれば無料プランの範囲内で利用できるはずですが、
+料金体系はX側で変更されることがあるため、最新の情報は
+developer.x.com で確認してください。
+
+### 2. GitHubリポジトリにSecretsを登録
+
+リポジトリの **Settings → Secrets and variables → Actions →
+New repository secret** から、以下の4つを登録する(名前は完全一致させる):
+
+| Secret名 | 値 |
+|---|---|
+| `X_API_KEY` | API Key |
+| `X_API_SECRET` | API Key Secret |
+| `X_ACCESS_TOKEN` | Access Token |
+| `X_ACCESS_TOKEN_SECRET` | Access Token Secret |
+
+登録後は `.github/workflows/update.yml` が自動でこれらを読み込み、
+新しい抽選回が追加された実行時にXへ投稿します。Secretsが未設定の間は
+投稿だけスキップされ、データ取得・分析・コミットは通常通り行われます
+(ログに「X API認証情報が未設定のため投稿をスキップします」と出ます)。
+
+### 3. 重複投稿の防止について
+
+`data/last_posted.json` に、ゲームごとに最後に投稿した回号を記録して
+います。同じ回号のままワークフローが再実行されても再投稿はしません。
+手動でもう一度投稿し直したい場合は、このファイルの該当ゲームの値を
+削除するか回号を変更してからコミットしてください。
+
 ## ディレクトリ構成
 
 ```
@@ -95,10 +155,12 @@ src/
   fetch_data.py   # 当せん番号一覧のスクレイピング・正規化
   analyze.py      # 統計分析・レポート生成
   suggest.py      # 番号提案(当選確率は変わりません)
+  post_to_x.py    # 傾向まとめをXへ自動投稿
 tests/
   test_analyze.py     # 合成データによる分析ロジックのユニットテスト
   test_fetch_data.py  # 実際のHTML構造を模したサンプルでのパーステスト
-data/             # 正規化済みの当せん番号CSV (Actionsが自動更新)
+  test_post_to_x.py   # 投稿文生成・重複投稿防止ロジックのテスト
+data/             # 正規化済みの当せん番号CSV・投稿済み回号 (Actionsが自動更新)
 reports/          # 生成されたレポート (Actionsが自動更新)
 .github/workflows/
   update.yml      # 定期データ取得・分析ワークフロー

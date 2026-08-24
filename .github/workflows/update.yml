@@ -29,6 +29,14 @@ jobs:
       - name: Run analysis
         run: python src/analyze.py
 
+      - name: Post trends to X
+        env:
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+        run: python src/post_to_x.py
+
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
