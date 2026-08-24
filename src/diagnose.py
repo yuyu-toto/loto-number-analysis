@@ -26,9 +26,12 @@ _HEADERS = {
 }
 
 TARGET_URLS = [
-    "https://www.mizuhobank.co.jp/takarakuji/check/loto/loto6/index.html",
-    "https://www.mizuhobank.co.jp/takarakuji/check/loto/backnumber/detail.html?fromto=1_20&type=loto6",
-    "https://www.mizuhobank.co.jp/takarakuji/check/loto/backnumber/index.html",
+    # みずほ銀行本体はGitHub ActionsのIP帯がAkamai(WAF)にブロックされている
+    # 可能性が高いため、コミュニティ運営のミラーサイトを調査する。
+    "https://loto6.thekyo.jp/download/index",
+    "https://loto7.thekyo.jp/download/index",
+    "https://www.mk-mode.com/rails/loto/loto6",
+    "https://www.mk-mode.com/rails/loto/loto7",
 ]
 
 
