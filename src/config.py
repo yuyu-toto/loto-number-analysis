@@ -1,13 +1,16 @@
 """ロト6 / ロト7 のルールとデータ取得先の設定。
 
-みずほ銀行の公式サイトはリニューアルによりURL構成が変わることがあるため、
-CANDIDATE_URLS は「最初に成功したものを使う」フォールバック方式にしてある。
-実行環境(GitHub Actions)で全て失敗した場合は、実際のページを確認して
-ここのURLを更新すること。
+みずほ銀行公式サイトはGitHub ActionsのIP帯がAkamai(WAF)にブロックされ
+アクセスできなかったため、ロト愛好家コミュニティの mk-mode SITE
+(https://www.mk-mode.com/rails/loto/) から当選番号一覧をスクレイピング
+して取得する。取得するのは回号・抽選日・本数字・ボーナス数字のみで、
+賞金額や口数など同サイト独自の集計列は取り込まない。
+
+このサイトも将来HTML構造が変わる可能性があるため、変わった場合は
+src/fetch_data.py のパース処理を見直すこと。
 """
 
 from dataclasses import dataclass
-from typing import Tuple
 
 
 @dataclass(frozen=True)
@@ -20,8 +23,7 @@ class GameConfig:
     bonus_count: int
     bonus_min: int
     bonus_max: int
-    candidate_urls: Tuple[str, ...]
-    discovery_page_urls: Tuple[str, ...]
+    source_url: str
     data_file: str
 
 
@@ -34,15 +36,7 @@ LOTO6 = GameConfig(
     bonus_count=1,
     bonus_min=1,
     bonus_max=43,
-    candidate_urls=(
-        "https://www.mizuhobank.co.jp/takarakuji/check/loto/loto6/csv/loto6.csv",
-        "https://www.mizuhobank.co.jp/retail/takarakuji/loto/loto6/csv/loto6.csv",
-    ),
-    # 上記が失敗した場合、このページのHTMLからCSVへのリンクを自動で探す
-    discovery_page_urls=(
-        "https://www.mizuhobank.co.jp/takarakuji/check/loto/loto6/index.html",
-        "https://www.mizuhobank.co.jp/takarakuji/check/loto/backnumber/index.html",
-    ),
+    source_url="https://www.mk-mode.com/rails/loto/loto6",
     data_file="data/loto6.csv",
 )
 
@@ -55,14 +49,7 @@ LOTO7 = GameConfig(
     bonus_count=2,
     bonus_min=1,
     bonus_max=37,
-    candidate_urls=(
-        "https://www.mizuhobank.co.jp/takarakuji/check/loto/loto7/csv/loto7.csv",
-        "https://www.mizuhobank.co.jp/retail/takarakuji/loto/loto7/csv/loto7.csv",
-    ),
-    discovery_page_urls=(
-        "https://www.mizuhobank.co.jp/takarakuji/check/loto/loto7/index.html",
-        "https://www.mizuhobank.co.jp/takarakuji/check/loto/backnumber/index.html",
-    ),
+    source_url="https://www.mk-mode.com/rails/loto/loto7",
     data_file="data/loto7.csv",
 )
 

@@ -1,196 +1,93 @@
 #!/usr/bin/env python3
-"""みずほ銀行の当せん番号CSVを取得し、data/loto6.csv / data/loto7.csv に
+"""mk-mode SITE (https://www.mk-mode.com/rails/loto/) の当選番号一覧を
+ページ送りしながらスクレイピングし、data/loto6.csv / data/loto7.csv に
 正規化して書き出す。
 
-このリポジトリの実行環境(このスクリプトを直接動かす人のPC、または
-GitHub Actions)にはインターネットアクセスが必要。取得元のCSVフォーマット
-(ヘッダーの有無・列順)はサイト側の変更で崩れる可能性があるため、
-ヘッダー名から列を推定する方式と、既知の位置(回号,抽せん日,[曜日],本数字...,
-ボーナス数字...)を仮定する方式の2通りを試す。
+取り込むのは回号・抽選日・本数字・ボーナス数字のみ。賞金額・当選口数・
+キャリーオーバーなど同サイト独自の集計列は取り込まない
+(当選番号自体は公式発表された事実情報だが、それ以外の集計は同サイトの
+著作物とみなせるため)。
+
+このサイトのHTML構造が変わった場合、_parse_page() の抽出ロジックを
+見直すこと。
 """
 from __future__ import annotations
 
 import csv
-import io
 import re
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import requests
+from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import GAMES, GameConfig  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
+REQUEST_DELAY_SEC = 0.5  # 相手サイトへの負荷軽減のためページ間に間隔を空ける
 
-_MAIN_RE = re.compile(r"本数字")
-_BONUS_RE = re.compile(r"ボーナス")
-_DRAWNO_RE = re.compile(r"回")
-_DATE_RE = re.compile(r"抽[せ選]ん?日")
-
-Draw = Tuple[int, str, List[int], List[int]]
-
-
-_BROWSER_HEADERS = {
+_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/csv,text/plain,text/html,application/xhtml+xml,*/*;q=0.8",
     "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
 }
 
-_CSV_HREF_RE = re.compile(r'href="([^"]+\.csv[^"]*)"', re.IGNORECASE)
+Draw = Tuple[int, str, List[int], List[int]]
 
-
-def _decode(raw: bytes) -> str:
-    for enc in ("utf-8-sig", "cp932", "shift_jis", "utf-8"):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="replace")
+_PAGE_COUNT_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 
 
 def _new_session() -> requests.Session:
     session = requests.Session()
-    session.headers.update(_BROWSER_HEADERS)
+    session.headers.update(_HEADERS)
     return session
 
 
-def _try_get_csv(session: requests.Session, url: str, referer: Optional[str] = None) -> bytes:
-    headers = {"Referer": referer} if referer else {}
-    resp = session.get(url, timeout=30, headers=headers)
+def _get_soup(session: requests.Session, url: str, params: Optional[dict] = None) -> BeautifulSoup:
+    resp = session.get(url, params=params, timeout=30)
     resp.raise_for_status()
-    if len(resp.content) < 100:
-        raise ValueError("response too small, likely not a CSV")
-    return resp.content
+    resp.encoding = resp.apparent_encoding or "utf-8"
+    return BeautifulSoup(resp.text, "html.parser")
 
 
-def _discover_csv_url(session: requests.Session, page_url: str) -> Optional[str]:
-    """バックナンバーページのHTMLからCSVへのリンクを探す(URL変更への保険)。"""
-    try:
-        resp = session.get(page_url, timeout=30)
-        resp.raise_for_status()
-    except Exception:  # noqa: BLE001
-        return None
-    html = _decode(resp.content)
-    match = _CSV_HREF_RE.search(html)
-    if not match:
-        return None
-    from urllib.parse import urljoin
-
-    return urljoin(page_url, match.group(1))
+def _total_pages(soup: BeautifulSoup) -> int:
+    el = soup.select_one("ul.pagination li.active span")
+    if not el:
+        return 1
+    m = _PAGE_COUNT_RE.search(el.get_text(strip=True))
+    return int(m.group(2)) if m else 1
 
 
-def _diagnostic_snippet(session: requests.Session, page_url: str, max_len: int = 800) -> str:
-    """全ての取得方法が失敗した際、ログに残す簡易デバッグ情報。"""
-    try:
-        resp = session.get(page_url, timeout=30)
-        text = _decode(resp.content)
-        snippet = re.sub(r"\s+", " ", text)[:max_len]
-        return f"  診断: {page_url} -> HTTP {resp.status_code}, 先頭{max_len}文字: {snippet}"
-    except Exception as exc:  # noqa: BLE001
-        return f"  診断: {page_url} -> 取得自体に失敗: {exc}"
-
-
-def _fetch_csv_text(game: GameConfig) -> Tuple[str, str]:
-    session = _new_session()
-    errors = []
-
-    for url in game.candidate_urls:
-        try:
-            content = _try_get_csv(session, url)
-            return _decode(content), url
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"{url} -> {exc}")
-
-    for page_url in game.discovery_page_urls:
-        csv_url = _discover_csv_url(session, page_url)
-        if not csv_url:
-            errors.append(f"{page_url} -> CSVへのリンクが見つかりませんでした")
+def _parse_page(soup: BeautifulSoup, game: GameConfig) -> List[Draw]:
+    draws: List[Draw] = []
+    for tr in soup.select("table.table-condensed tbody tr"):
+        cells = tr.find_all("td")
+        if len(cells) < 3:
             continue
         try:
-            content = _try_get_csv(session, csv_url, referer=page_url)
-            print(f"[{game.key}] {page_url} から自動発見したCSVリンクを使用: {csv_url}")
-            return _decode(content), csv_url
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"{page_url} で発見した {csv_url} -> {exc}")
-
-    diagnostics = [_diagnostic_snippet(session, u) for u in game.discovery_page_urls[:1]]
-    raise RuntimeError(
-        f"{game.name}: 候補URL・自動発見のいずれでもCSV取得に失敗しました。"
-        "サイトの構成が変わったか、アクセス制限の可能性があります。"
-        "src/config.py の candidate_urls / discovery_page_urls を見直してください。\n"
-        + "\n".join(errors)
-        + "\n"
-        + "\n".join(diagnostics)
-    )
-
-
-def _is_int(s: str) -> bool:
-    try:
-        int(s.strip())
-        return True
-    except ValueError:
-        return False
-
-
-def _parse_by_header(rows: List[List[str]], game: GameConfig) -> Optional[List[Draw]]:
-    if not rows:
-        return None
-    header = rows[0]
-    draw_idx = next((i for i, h in enumerate(header) if _DRAWNO_RE.search(h)), None)
-    date_idx = next((i for i, h in enumerate(header) if _DATE_RE.search(h)), None)
-    main_idx = [i for i, h in enumerate(header) if _MAIN_RE.search(h)]
-    bonus_idx = [i for i, h in enumerate(header) if _BONUS_RE.search(h)]
-
-    if draw_idx is None or date_idx is None:
-        return None
-    if len(main_idx) < game.main_count or len(bonus_idx) < game.bonus_count:
-        return None
-
-    main_idx = main_idx[: game.main_count]
-    bonus_idx = bonus_idx[: game.bonus_count]
-    needed_max = max([draw_idx, date_idx, *main_idx, *bonus_idx])
-
-    parsed: List[Draw] = []
-    for row in rows[1:]:
-        if len(row) <= needed_max:
-            continue
-        try:
-            draw_no = int(row[draw_idx].strip())
-            main = sorted(int(row[i]) for i in main_idx)
-            bonus = [int(row[i]) for i in bonus_idx]
+            draw_no = int(cells[0].get_text(strip=True))
         except ValueError:
             continue
-        parsed.append((draw_no, row[date_idx].strip(), main, bonus))
-    return parsed
+        date = cells[1].get_text(strip=True)
 
-
-def _parse_positional(rows: List[List[str]], game: GameConfig) -> List[Draw]:
-    """回号,抽せん日,[曜日],本数字*N,ボーナス数字*B, ... を仮定した位置ベースの解析。"""
-    parsed: List[Draw] = []
-    for row in rows:
-        if len(row) < 2 or not _is_int(row[0]):
-            continue  # ヘッダー行やゴミ行をスキップ
-        draw_no = int(row[0].strip())
-        date = row[1].strip()
-        offset = 3 if len(row) > 2 and not _is_int(row[2]) else 2
-        needed = offset + game.main_count + game.bonus_count
-        if len(row) < needed:
+        raw = cells[2].get_text(separator="\n").strip()
+        lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
+        if len(lines) < 2:
             continue
+        main_str, bonus_str = lines[0], lines[1].strip("()")
         try:
-            main = sorted(int(x) for x in row[offset : offset + game.main_count])
-            bonus = [
-                int(x)
-                for x in row[offset + game.main_count : offset + game.main_count + game.bonus_count]
-            ]
+            main = sorted(int(x) for x in main_str.split())
+            bonus = [int(x) for x in bonus_str.split()]
         except ValueError:
             continue
-        parsed.append((draw_no, date, main, bonus))
-    return parsed
+
+        draws.append((draw_no, date, main, bonus))
+    return draws
 
 
 def _valid(draw: Draw, game: GameConfig) -> bool:
@@ -207,29 +104,29 @@ def _valid(draw: Draw, game: GameConfig) -> bool:
 
 
 def fetch_and_normalize(game: GameConfig) -> List[Draw]:
-    text, used_url = _fetch_csv_text(game)
-    reader = csv.reader(io.StringIO(text))
-    rows = [r for r in reader if r]
-    if not rows:
-        raise RuntimeError(f"{game.name}: 取得したCSVが空でした ({used_url})")
+    session = _new_session()
+    first_soup = _get_soup(session, game.source_url, params={"page_num": 0})
+    total_pages = _total_pages(first_soup)
+    print(f"[{game.key}] {game.source_url} 全{total_pages}ページを取得します")
 
-    parsed = _parse_by_header(rows, game)
-    mode = "header"
-    if not parsed:
-        parsed = _parse_positional(rows, game)
-        mode = "positional"
+    all_draws: List[Draw] = list(_parse_page(first_soup, game))
+    for page_num in range(1, total_pages):
+        time.sleep(REQUEST_DELAY_SEC)
+        soup = _get_soup(session, game.source_url, params={"page_num": page_num})
+        all_draws.extend(_parse_page(soup, game))
 
-    valid = [d for d in parsed if _valid(d, game)]
+    valid = [d for d in all_draws if _valid(d, game)]
     if not valid:
         raise RuntimeError(
-            f"{game.name}: {mode}方式でパースしましたが有効な行が0件でした ({used_url})。"
-            "CSVフォーマットが想定と異なる可能性があります。"
+            f"{game.name}: {game.source_url} から有効な行が1件も取得できませんでした。"
+            "サイトのHTML構造が変わった可能性があります。src/fetch_data.py の"
+            "_parse_page() を見直してください。"
         )
 
     # 回号の重複を除き、最新のもので上書きしつつ昇順に並べる
     by_draw_no = {d[0]: d for d in valid}
     ordered = sorted(by_draw_no.values(), key=lambda d: d[0])
-    print(f"[{game.key}] {used_url} から {len(ordered)} 件取得 (解析方式: {mode})")
+    print(f"[{game.key}] {len(ordered)} 件取得しました (第{ordered[0][0]}回〜第{ordered[-1][0]}回)")
     return ordered
 
 

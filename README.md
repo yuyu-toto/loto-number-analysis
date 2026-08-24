@@ -26,7 +26,7 @@
 
 ## 機能
 
-- `src/fetch_data.py`: みずほ銀行の当せん番号CSVを取得し、
+- `src/fetch_data.py`: 当せん番号一覧を取得し、
   `data/loto6.csv` / `data/loto7.csv` に正規化して保存
 - `src/analyze.py`: 保存済みデータから統計レポートを生成
   (`reports/loto6_report.md` / `reports/loto7_report.md` と `.json`)
@@ -64,29 +64,40 @@ python src/suggest.py      # 番号提案(任意)
 
 ## データ取得元について (重要な注意)
 
-`src/fetch_data.py` はみずほ銀行公式サイトのCSVを取得しますが、
-このサイトはリニューアルでURL構成が変わることがあります。
-`src/config.py` の `candidate_urls` に複数の候補URLを設定しており、
-上から順に試して最初に成功したものを使う仕組みです。
+当初はみずほ銀行公式サイトのCSVを直接取得する方式だったが、
+**GitHub ActionsのIPアドレス帯がみずほ銀行のWAF(Akamai)に一律で
+ブロックされており**(すべてのページで `Access Denied` / Akamaiの
+エラーページが返る)、取得できないことが判明した。
 
-**全ての候補URLの取得に失敗した場合、GitHub Actionsのログにその旨と
-試したURL一覧・エラー内容が出力されます。** その場合は
-[みずほ銀行の当せん番号案内ページ](https://www.mizuhobank.co.jp/takarakuji/check/loto/backnumber/index.html)
-を確認し、`src/config.py` の該当URLを実際のCSVダウンロードURLに
-更新してください。CSVのパース方法は「ヘッダー名から列を推定する方式」と
-「既知の列位置を仮定する方式」の2段階のフォールバックになっているため、
-多少フォーマットが変わっても動く可能性がありますが、保証はしません。
+そのため、ロト愛好家コミュニティが運営する
+[mk-mode SITE](https://www.mk-mode.com/rails/loto/loto6) の当選番号一覧
+ページをスクレイピングする方式に切り替えている(`src/config.py` の
+`source_url`)。取得するのは **回号・抽選日・本数字・ボーナス数字のみ**。
+賞金額・当選口数・キャリーオーバーなど同サイト独自の集計列は、当選番号
+そのもの(公式発表された事実情報)とは異なり同サイトの著作物とみなせる
+ため取り込んでいない。
+
+- 全ページを取得するため、`REQUEST_DELAY_SEC`(既定0.5秒)ずつ間隔を
+  空けてページ送りしている。全履歴取得には数分かかる場合がある。
+- **もしこのサイトのHTML構造が変わった場合**、GitHub Actionsのログに
+  「有効な行が1件も取得できませんでした」というエラーが出る。その場合は
+  実際のページ( https://www.mk-mode.com/rails/loto/loto6 など )を確認し、
+  `src/fetch_data.py` の `_parse_page()` / `_total_pages()` を実際の
+  HTML構造に合わせて修正すること。
+- 別のデータ源に切り替えたい場合は `src/config.py` の `source_url` と
+  `src/fetch_data.py` のパース処理を差し替えればよい。
 
 ## ディレクトリ構成
 
 ```
 src/
   config.py       # ロト6/ロト7のルールとデータ取得先URL
-  fetch_data.py   # 当せん番号CSVの取得・正規化
+  fetch_data.py   # 当せん番号一覧のスクレイピング・正規化
   analyze.py      # 統計分析・レポート生成
   suggest.py      # 番号提案(当選確率は変わりません)
 tests/
-  test_analyze.py # 合成データによる分析ロジックのユニットテスト
+  test_analyze.py     # 合成データによる分析ロジックのユニットテスト
+  test_fetch_data.py  # 実際のHTML構造を模したサンプルでのパーステスト
 data/             # 正規化済みの当せん番号CSV (Actionsが自動更新)
 reports/          # 生成されたレポート (Actionsが自動更新)
 .github/workflows/
