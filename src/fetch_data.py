@@ -32,6 +32,18 @@ _DATE_RE = re.compile(r"抽[せ選]ん?日")
 Draw = Tuple[int, str, List[int], List[int]]
 
 
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/csv,text/plain,text/html,application/xhtml+xml,*/*;q=0.8",
+    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+}
+
+_CSV_HREF_RE = re.compile(r'href="([^"]+\.csv[^"]*)"', re.IGNORECASE)
+
+
 def _decode(raw: bytes) -> str:
     for enc in ("utf-8-sig", "cp932", "shift_jis", "utf-8"):
         try:
@@ -41,21 +53,79 @@ def _decode(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _new_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update(_BROWSER_HEADERS)
+    return session
+
+
+def _try_get_csv(session: requests.Session, url: str, referer: Optional[str] = None) -> bytes:
+    headers = {"Referer": referer} if referer else {}
+    resp = session.get(url, timeout=30, headers=headers)
+    resp.raise_for_status()
+    if len(resp.content) < 100:
+        raise ValueError("response too small, likely not a CSV")
+    return resp.content
+
+
+def _discover_csv_url(session: requests.Session, page_url: str) -> Optional[str]:
+    """バックナンバーページのHTMLからCSVへのリンクを探す(URL変更への保険)。"""
+    try:
+        resp = session.get(page_url, timeout=30)
+        resp.raise_for_status()
+    except Exception:  # noqa: BLE001
+        return None
+    html = _decode(resp.content)
+    match = _CSV_HREF_RE.search(html)
+    if not match:
+        return None
+    from urllib.parse import urljoin
+
+    return urljoin(page_url, match.group(1))
+
+
+def _diagnostic_snippet(session: requests.Session, page_url: str, max_len: int = 800) -> str:
+    """全ての取得方法が失敗した際、ログに残す簡易デバッグ情報。"""
+    try:
+        resp = session.get(page_url, timeout=30)
+        text = _decode(resp.content)
+        snippet = re.sub(r"\s+", " ", text)[:max_len]
+        return f"  診断: {page_url} -> HTTP {resp.status_code}, 先頭{max_len}文字: {snippet}"
+    except Exception as exc:  # noqa: BLE001
+        return f"  診断: {page_url} -> 取得自体に失敗: {exc}"
+
+
 def _fetch_csv_text(game: GameConfig) -> Tuple[str, str]:
+    session = _new_session()
     errors = []
+
     for url in game.candidate_urls:
         try:
-            resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-            resp.raise_for_status()
-            if len(resp.content) < 100:
-                raise ValueError("response too small, likely not a CSV")
-            return _decode(resp.content), url
+            content = _try_get_csv(session, url)
+            return _decode(content), url
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{url} -> {exc}")
+
+    for page_url in game.discovery_page_urls:
+        csv_url = _discover_csv_url(session, page_url)
+        if not csv_url:
+            errors.append(f"{page_url} -> CSVへのリンクが見つかりませんでした")
+            continue
+        try:
+            content = _try_get_csv(session, csv_url, referer=page_url)
+            print(f"[{game.key}] {page_url} から自動発見したCSVリンクを使用: {csv_url}")
+            return _decode(content), csv_url
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{page_url} で発見した {csv_url} -> {exc}")
+
+    diagnostics = [_diagnostic_snippet(session, u) for u in game.discovery_page_urls[:1]]
     raise RuntimeError(
-        f"{game.name}: 候補URLすべての取得に失敗しました。"
-        "サイトの構成が変わった可能性があるため src/config.py の candidate_urls を"
-        "見直してください。\n" + "\n".join(errors)
+        f"{game.name}: 候補URL・自動発見のいずれでもCSV取得に失敗しました。"
+        "サイトの構成が変わったか、アクセス制限の可能性があります。"
+        "src/config.py の candidate_urls / discovery_page_urls を見直してください。\n"
+        + "\n".join(errors)
+        + "\n"
+        + "\n".join(diagnostics)
     )
 
 

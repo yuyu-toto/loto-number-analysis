@@ -21,6 +21,7 @@ class GameConfig:
     bonus_min: int
     bonus_max: int
     candidate_urls: Tuple[str, ...]
+    discovery_page_urls: Tuple[str, ...]
     data_file: str
 
 
@@ -37,6 +38,11 @@ LOTO6 = GameConfig(
         "https://www.mizuhobank.co.jp/takarakuji/check/loto/loto6/csv/loto6.csv",
         "https://www.mizuhobank.co.jp/retail/takarakuji/loto/loto6/csv/loto6.csv",
     ),
+    # 上記が失敗した場合、このページのHTMLからCSVへのリンクを自動で探す
+    discovery_page_urls=(
+        "https://www.mizuhobank.co.jp/takarakuji/check/loto/loto6/index.html",
+        "https://www.mizuhobank.co.jp/takarakuji/check/loto/backnumber/index.html",
+    ),
     data_file="data/loto6.csv",
 )
 
@@ -52,6 +58,10 @@ LOTO7 = GameConfig(
     candidate_urls=(
         "https://www.mizuhobank.co.jp/takarakuji/check/loto/loto7/csv/loto7.csv",
         "https://www.mizuhobank.co.jp/retail/takarakuji/loto/loto7/csv/loto7.csv",
+    ),
+    discovery_page_urls=(
+        "https://www.mizuhobank.co.jp/takarakuji/check/loto/loto7/index.html",
+        "https://www.mizuhobank.co.jp/takarakuji/check/loto/backnumber/index.html",
     ),
     data_file="data/loto7.csv",
 )
